@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- Instruction: If code is changed, update the comments. Goal for the comments is to provide context for future AI changes -->
+<!-- Key Implementation Notes (Updated)
+State Management: All data lives in the state object. UI is re-rendered or updated reactively when state changes.
+isDirty tracks mutations (add, delete, edit, reorder) and only resets after a successful PUT /places.
+
+UNIQUE IDENTIFICATION FIX: Each place item gets a client-side _uid on load to handle duplicate placeIds.
+All DOM identification, SortableJS mapping, editing, and deletion use _uid instead of placeId.
+
+NO SORT ORDER (Updated): The backend no longer sends or expects a sortOrder key. Order is determined
+entirely by array position in the JSON payload. Reordering via drag-and-drop simply rearranges the
+state.places array; on save, only {placeName, placeId} objects are sent in array order.
+
+API Layer: apiFetch() centralizes all network requests. Handles credentials, 401→logout, non-200 toast notifications, offline detection.
+AbortControllers used for search debouncing.
+
+Validation & Masking: OTP uses regex stripping + manual dash insertion. Place names use PLACE_NAME_REGEX validated in real-time.
+Invalid characters stripped immediately on input. CSS .error class with shake animation for length violations.
+
+Drag & Drop (FIXED): SortableJS initialized on <ul> with dedicated drag handle (.drag-handle).
+- Uses _uid (not placeId) to map DOM order back to state — handles duplicate placeIds correctly.
+- Mobile fix: touchStartThreshold=5, preventOnFilter:false, and full destroy/re-init cycle after every render.
+- Drag handle uses cursor grab; rest of row is free for scrolling and button interactions.
+
+Wizard Flow: Two-step modal for adding places. Step 1 fetches /search-google?query= with 500ms debounce & abort-on-new-query.
+Step 2 sanitizes/truncates selected name in real-time, validates, pushes to state.
+
+Edit Modal (NEW): Replaces inline editing. Single-step modal similar to wizard step 2.
+- Opens when edit button is clicked, pre-fills current name
+- Real-time character stripping and validation identical to add flow
+- Saves via _uid lookup, marks dirty, re-renders list
+
+Design System: CSS variables enforce B&W theme with red accents. Mobile-first flexbox layout.
+CSS spinners/transitions for loading states. No heavy UI libraries. Search results container is 320px tall.
+
+Security/Compliance: credentials:'include' sends session cookies. XSS prevention via escapeHtml().
+-->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LadenZeit Manager</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
+<style>
+/* ========================================= CSS VARIABLES & RESET ========================================= */
+:root {
+  --color-bg: #ffffff;
+  --color-fg: #000000;
+  --color-accent: #e63946;
+  --color-border: #000000;
+  --color-muted: #f5f5f5;
+  --font-main: system-ui, -apple-system, sans-serif;
+  --radius: 2px;
+  --transition-speed: 0.2s;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-main); background-color: var(--color-bg); color: var(--color-fg); line-height: 1.5; min-height: 100vh; display: flex; flex-direction: column; }
+
+/* Utility Classes */
+.hidden { display: none !important; }
+.flex-center { display: flex; align-items: center; justify-content: center; }
+
+/* ========================================= LAYOUT & VIEWS ========================================= */
+.view { width: 100%; max-width: 600px; margin: 0 auto; padding: 2rem 1.5rem; flex: 1; display: flex; flex-direction: column; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; border-bottom: 2px solid var(--color-border); padding-bottom: 0.5rem; }
+h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.5px; text-transform: uppercase; }
+main { flex: 1; margin-bottom: 2rem; position: relative; }
+footer { border-top: 2px solid var(--color-border); padding-top: 1rem; }
+
+/* ========================================= COMPONENTS: BUTTONS & INPUTS ========================================= */
+button { background: var(--color-fg); color: var(--color-bg); border: 2px solid var(--color-fg); padding: 0.75rem 1.25rem; font-size: 1rem; font-weight: 600; cursor: pointer; transition: all var(--transition-speed) ease; display: inline-flex; align-items: center; gap: 0.5rem; }
+button:hover:not(:disabled) { background: var(--color-bg); color: var(--color-fg); }
+button:disabled { opacity: 0.4; cursor: not-allowed; border-color: #ccc; color: #666; }
+input[type="text"] { width: 100%; padding: 0.75rem; font-size: 1rem; border: 2px solid var(--color-border); background: var(--color-bg); color: var(--color-fg); outline: none; transition: border-color var(--transition-speed); }
+input[type="text"]:focus { border-color: var(--color-accent); }
+input[type="text"].error { border-color: var(--color-accent); animation: shake 0.3s ease-in-out; }
+@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+
+/* ========================================= AUTH VIEW ========================================= */
+#auth-view { justify-content: center; align-items: center; text-align: center; }
+#auth-form { display: flex; gap: 0.5rem; margin-top: 1.5rem; width: 100%; max-width: 320px; }
+#otp-input { text-transform: uppercase; letter-spacing: 2px; font-family: monospace; }
+
+/* ========================================= PLACES LIST & ITEMS ========================================= */
+#places-list-container { position: relative; min-height: 100px; }
+#loading-overlay { position: absolute; inset: 0; background: rgba(255,255,255,0.8); display: flex; align-items: center; justify-content: center; z-index: 10; }
+#places-list { list-style: none; border: 2px solid var(--color-border); min-height: 40px; }
+.place-item { display: flex; align-items: center; padding: 1rem; border-bottom: 1px solid var(--color-border); background: var(--color-bg); transition: background var(--transition-speed); touch-action: pan-y; }
+.place-item:last-child { border-bottom: none; }
+.place-item.dragging { opacity: 0.5; background: var(--color-muted); }
+
+/* Drag handle: grip icon on the left, only this triggers drag-and-drop */
+.drag-handle { cursor: grab; padding: 0.25rem 0.5rem; color: #999; font-size: 1rem; margin-right: 0.5rem; user-select: none; -webkit-user-select: none; }
+.drag-handle:hover { color: var(--color-fg); }
+.place-name { flex: 1; font-weight: 600; margin-right: 1rem; padding: 0.25rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-id { font-size: 0.75rem; color: #666; margin-right: 1rem; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.item-actions { display: flex; gap: 0.25rem; flex-shrink: 0; }
+.icon-btn { background: transparent; border: none; padding: 0.5rem; color: #666; cursor: pointer; font-size: 1rem; line-height: 1; }
+.icon-btn:hover { color: var(--color-fg); }
+.icon-btn.delete:hover { color: var(--color-accent); }
+
+/* ========================================= WIZARD MODAL (Add Place) ========================================= */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.modal-content { background: var(--color-bg); padding: 2rem; width: 90%; max-width: 400px; border: 2px solid var(--color-border); position: relative; }
+.modal h2 { margin-bottom: 1.5rem; font-size: 1.25rem; text-transform: uppercase; }
+#search-results { list-style: none; max-height: 320px; overflow-y: auto; border: 1px solid #ccc; margin-top: 0.5rem; }
+.search-result-item { padding: 0.75rem; cursor: pointer; border-bottom: 1px solid #eee; transition: background 0.2s; }
+.search-result-item:hover { background: var(--color-muted); }
+.search-result-name { font-weight: 600; display: block; }
+.search-result-address { font-size: 0.85rem; color: #555; }
+#search-loading { padding: 1rem; text-align: center; color: #666; font-size: 0.875rem; }
+
+/* ========================================= NOTIFICATIONS & BANNERS ========================================= */
+#offline-banner, #toast-container { position: fixed; left: 0; right: 0; z-index: 200; text-align: center; padding: 0.75rem; font-weight: 600; }
+#offline-banner { top: 0; background: var(--color-accent); color: white; transform: translateY(-100%); transition: transform 0.3s ease; }
+#offline-banner.visible { transform: translateY(0); }
+#toast-container { bottom: 2rem; display: flex; flex-direction: column; gap: 0.5rem; align-items: center; pointer-events: none; }
+.toast { background: var(--color-fg); color: white; padding: 0.75rem 1.25rem; border-radius: var(--radius); opacity: 0; transform: translateY(10px); transition: all 0.3s ease; pointer-events: auto; max-width: 90%; }
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.error { background-color: var(--color-accent); color: white; }
+
+/* ========================================= LOADING INDICATORS & STATES ========================================= */
+.spinner { display: inline-block; width: 1em; height: 1em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#dirty-indicator { color: var(--color-accent); margin-right: 1rem; display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 1px; }
+
+@media (min-width: 600px) { .view { padding: 3rem 2rem; } h1 { font-size: 2rem; } }
+</style>
+</head>
+<body>
+<div id="offline-banner">No connection to server.</div>
+
+<section id="auth-view" class="view hidden">
+  <h1>LadenZeit</h1>
+  <p style="margin-top: 0.5rem; color: #666;">Enter device access code</p>
+  <form id="auth-form" autocomplete="off">
+    <input type="text" id="otp-input" placeholder="XXX-XXX-XXX" maxlength="11" aria-label="Access Token">
+    <button type="submit" id="auth-submit"><i class="fas fa-arrow-right"></i></button>
+  </form>
+</section>
+
+<section id="app-view" class="view hidden">
+  <header>
+    <h1>LadenZeit</h1>
+    <div class="header-actions flex-center">
+      <span id="dirty-indicator" class="hidden"><i class="fas fa-circle"></i> Unsaved</span>
+      <button id="logout-btn" title="Logout"><i class="fas fa-sign-out-alt"></i></button>
+    </div>
+  </header>
+  <main>
+    <div id="places-list-container">
+      <div id="loading-overlay" class="hidden"><span class="spinner"></span></div>
+      <ul id="places-list"></ul>
+    </div>
+    <button id="add-place-btn" style="margin-top: 1.5rem; width: 100%; justify-content: center;">
+      <i class="fas fa-plus"></i> Add Place
+    </button>
+  </main>
+  <footer>
+    <button id="save-btn" disabled style="width: 100%; justify-content: center;">
+      <span class="btn-text">Save Changes</span>
+      <span class="spinner hidden"></span>
+    </button>
+  </footer>
+</section>
+
+<!-- ADD PLACE WIZARD MODAL -->
+<div id="wizard-modal" class="modal hidden">
+  <div class="modal-content">
+    <h2>Add New Place</h2>
+    <!-- Step 1: Search for Google Place ID -->
+    <div id="wizard-step-1">
+      <input type="text" id="search-input" placeholder="Search location (min 3 chars)..." autocomplete="off">
+      <div id="search-loading" class="hidden"><span class="spinner"></span> Searching...</div>
+      <ul id="search-results"></ul>
+      <p id="no-search-results" class="hidden" style="margin-top:0.5rem; color:#666;">No results found.</p>
+    </div>
+    <!-- Step 2: Set/Confirm Display Name -->
+    <div id="wizard-step-2" class="hidden">
+      <p style="margin-bottom:0.5rem;">Set display name (max 8 chars):</p>
+      <input type="text" id="new-place-name" maxlength="8" placeholder="e.g., Rewe City">
+      <button id="confirm-add-btn" style="width:100%; margin-top:1rem; justify-content:center;">Add to List</button>
+    </div>
+    <button id="close-wizard-btn" style="margin-top:1.5rem; width:100%; background:transparent; color:var(--color-fg); border-color:#ccc;">Cancel</button>
+  </div>
+</div>
+
+<!-- EDIT PLACE MODAL (Replaces inline editing) -->
+<div id="edit-modal" class="modal hidden">
+  <div class="modal-content">
+    <h2>Edit Place Name</h2>
+    <p style="margin-bottom:0.5rem;">Set display name (max 8 chars):</p>
+    <input type="text" id="edit-place-name" maxlength="8" placeholder="e.g., Rewe City">
+    <button id="confirm-edit-btn" style="width:100%; margin-top:1rem; justify-content:center;">Save Changes</button>
+    <button id="close-edit-btn" style="margin-top:1.5rem; width:100%; background:transparent; color:var(--color-fg); border-color:#ccc;">Cancel</button>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+/**
+ * =========================================
+ * LADENZEIT MANAGEMENT FRONTEND
+ * FIXES APPLIED:
+ * 1. Duplicate placeId: Each item gets a client-side _uid on load. All DOM identification,
+ *    SortableJS mapping, editing, and deletion use _uid instead of placeId.
+ * 2. Delete re-sort: renderPlacesList() now uses stable _uid-based rendering. SortableJS
+ *    destroy/re-init cycle is clean. Array order determines display order (no sortOrder).
+ * 3. Mobile drop failure: Added touchStartThreshold, preventOnFilter:false to SortableJS.
+ *    Full destroy → DOM rebuild → re-init cycle ensures mobile gesture handlers are fresh.
+ * 4. Inline editing replaced with modal: Edit button now opens a dedicated edit modal
+ *    (similar to wizard step 2) instead of replacing the name span with an input inline.
+ * 5. NO SORT ORDER: Backend no longer sends/expects sortOrder. Order is determined by
+ *    array position in JSON. Payload on save only includes {placeName, placeId}.
+ * =========================================
+ */
+
+// ================= CONFIGURATION & STATE =================
+const API_BASE = '/api/v1/web';
+
+const state = {
+  isAuthenticated: false,
+  places: [], // Array of place objects from server (each gets _uid on load)
+  isDirty: false,
+  abortController: null,
+  authPollInterval: null,
+  wizardStep: 1,
+  selectedPlaceId: null,
+  editingUid: null // Tracks which place is being edited in the edit modal
+};
+
+// DOM Element Cache
+const els = {
+  authView: document.getElementById('auth-view'),
+  appView: document.getElementById('app-view'),
+  otpInput: document.getElementById('otp-input'),
+  authForm: document.getElementById('auth-form'),
+  logoutBtn: document.getElementById('logout-btn'),
+  dirtyIndicator: document.getElementById('dirty-indicator'),
+  placesList: document.getElementById('places-list'),
+  loadingOverlay: document.getElementById('loading-overlay'),
+  addPlaceBtn: document.getElementById('add-place-btn'),
+  saveBtn: document.getElementById('save-btn'),
+  wizardModal: document.getElementById('wizard-modal'),
+  wizardStep1: document.getElementById('wizard-step-1'),
+  wizardStep2: document.getElementById('wizard-step-2'),
+  searchInput: document.getElementById('search-input'),
+  searchResults: document.getElementById('search-results'),
+  noSearchResults: document.getElementById('no-search-results'),
+  newPlaceName: document.getElementById('new-place-name'),
+  confirmAddBtn: document.getElementById('confirm-add-btn'),
+  closeWizardBtn: document.getElementById('close-wizard-btn'),
+  // Edit modal elements
+  editModal: document.getElementById('edit-modal'),
+  editPlaceName: document.getElementById('edit-place-name'),
+  confirmEditBtn: document.getElementById('confirm-edit-btn'),
+  closeEditBtn: document.getElementById('close-edit-btn'),
+  toastContainer: document.getElementById('toast-container'),
+  offlineBanner: document.getElementById('offline-banner'),
+  searchLoading: document.getElementById('search-loading')
+};
+
+const PLACE_NAME_REGEX_VALIDATE = /^[A-Za-z0-9 ^!\"$%&/{}()\[\]=?\`'~+\\\-*<|>;,:._#@]{1,8}$/;
+const PLACE_NAME_REGEX_SANITIZE = /[^A-Za-z0-9 ^!\"$%&/{}()\[\]=?\`'~+\\\-*<|>;,:._#@]/g;
+
+// ================= UTILITY FUNCTIONS =================
+function showToast(message, type = 'error') {
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+  els.toastContainer.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+function debounce(func, wait) {
+  let timeout;
+  return (...args) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
+
+function validatePlaceName(name) {
+  return PLACE_NAME_REGEX_VALIDATE.test(name);
+}
+
+function sanitizePlaceName(rawName) {
+  const cleaned = rawName.replace(PLACE_NAME_REGEX_SANITIZE, '');
+  return cleaned.slice(0, 8);
+}
+
+function updateOfflineBanner(isOnline) {
+  if (!isOnline) els.offlineBanner.classList.add('visible');
+  else els.offlineBanner.classList.remove('visible');
+}
+
+/** Generates a unique client-side ID for each place item. Used to handle duplicate placeIds. */
+let _uidCounter = 0;
+function generateUid() {
+  return `uid_${Date.now()}_${++_uidCounter}`;
+}
+
+// ================= API LAYER =================
+async function apiFetch(endpoint, options = {}) {
+  const url = `${API_BASE}${endpoint}`;
+  try {
+    const response = await fetch(url, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        ...options.headers
+      }
+    });
+
+    if (response.status === 401) {
+      showToast('Session expired. Please log in again.');
+      switchToUnauthenticated();
+      return null;
+    }
+    if (!response.ok) {
+      const msg = response.status >= 500 ? 'Server error occurred.' : 'Request failed. Please try again.';
+      showToast(msg);
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      return await response.json();
+    }
+    return null;
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
+    if (!navigator.onLine || error.message.includes('Failed to fetch')) {
+      updateOfflineBanner(false);
+      showToast('No connection. Check network.');
+    } else {
+      showToast(error.message || 'Unexpected error.');
+    }
+    throw error;
+  }
+}
+
+// ================= AUTHENTICATION LOGIC =================
+async function initAuth() {
+  try {
+    const response = await fetch(`${API_BASE}/auth/status`, { credentials: 'include' });
+    if (response.ok) {
+      switchToAuthenticated();
+    } else {
+      switchToUnauthenticated();
+    }
+  } catch {
+    switchToUnauthenticated();
+  }
+
+  state.authPollInterval = setInterval(async () => {
+    try { await fetch(`${API_BASE}/auth/status`, { credentials: 'include' }); } catch {}
+  }, 15 * 60 * 1000);
+}
+
+function handleOtpInput(e) {
+  let val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (val.length > 3) val = `${val.slice(0,3)}-${val.slice(3)}`;
+  if (val.length > 7) val = `${val.slice(0,7)}-${val.slice(7)}`;
+  e.target.value = val.slice(0, 11);
+}
+
+async function handleAuthSubmit(e) {
+  e.preventDefault();
+  const rawToken = els.otpInput.value.replace(/-/g, '');
+  if (rawToken.length !== 9) { showToast('Invalid token format.'); return; }
+
+  try {
+    const response = await fetch(`${API_BASE}/auth/otp`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-Device-Token': rawToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (response.ok) { switchToAuthenticated(); }
+    else { showToast('Invalid or expired access code.'); els.otpInput.value = ''; els.otpInput.focus(); }
+  } catch { showToast('Network error. Please try again.'); }
+}
+
+async function handleLogout() {
+  try { await fetch(`${API_BASE}/auth/invalidate`, { method: 'POST', credentials: 'include' }); } catch {}
+  switchToUnauthenticated();
+}
+
+function switchToUnauthenticated() {
+  state.isAuthenticated = false;
+  state.places = [];
+  state.isDirty = false;
+  clearInterval(state.authPollInterval);
+  els.appView.classList.add('hidden');
+  els.authView.classList.remove('hidden');
+  els.otpInput.value = '';
+}
+
+function switchToAuthenticated() {
+  state.isAuthenticated = true;
+  els.authView.classList.add('hidden');
+  els.appView.classList.remove('hidden');
+  loadPlaces();
+}
+
+// ================= PLACES LIST LOGIC =================
+
+/** Fetches places from backend and renders list. Assigns _uid to each item for duplicate placeId safety.
+ * Order is preserved as-is from the server array — no sortOrder sorting needed. */
+async function loadPlaces() {
+  els.loadingOverlay.classList.remove('hidden');
+  try {
+    const data = await apiFetch('/places');
+    // Assign _uid to each item; preserve server array order (no sortOrder sort)
+    state.places = Array.isArray(data) ? data.map(p => ({ ...p, _uid: generateUid() })) : [];
+    renderPlacesList();
+  } catch (err) {
+    showToast('Failed to load places.');
+  } finally {
+    els.loadingOverlay.classList.add('hidden');
+  }
+}
+
+/** Renders the places list DOM based on state.places. Uses _uid for all identification.
+ * No sorting — array position determines display order. */
+function renderPlacesList() {
+  destroySortable();
+  els.placesList.innerHTML = '';
+
+  // Use state.places directly in its current array order (no sortOrder sort)
+  state.places.forEach((place) => {
+    const li = document.createElement('li');
+    li.className = 'place-item';
+    li.dataset.uid = place._uid;
+    li.innerHTML = `
+      <span class="drag-handle" title="Drag to reorder"><i class="fas fa-grip-vertical"></i></span>
+      <span class="place-name">${escapeHtml(place.placeName)}</span>
+      <span class="place-id" title="${escapeHtml(place.placeId)}">${escapeHtml(place.placeId.slice(0, 12))}...</span>
+      <div class="item-actions">
+        <button class="icon-btn edit-btn" type="button" title="Edit Name"><i class="fas fa-pen"></i></button>
+        <button class="icon-btn delete-btn" type="button" title="Delete"><i class="fas fa-trash-alt"></i></button>
+      </div>
+    `;
+
+    // Edit button now opens the edit modal instead of inline editing
+    li.querySelector('.edit-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEditModal(place);
+    });
+
+    // Delete Handler — uses _uid for precise deletion (handles duplicates)
+    li.querySelector('.delete-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deletePlace(place._uid);
+    });
+
+    els.placesList.appendChild(li);
+  });
+
+  initSortable();
+}
+
+/** Destroys the current SortableJS instance if it exists. */
+function destroySortable() {
+  const existing = els.placesList.__sortableInstance;
+  if (existing) {
+    existing.destroy();
+    els.placesList.__sortableInstance = null;
+  }
+}
+
+/** Initializes SortableJS for drag-and-drop reordering.
+ * On drop, simply rearranges state.places array — no sortOrder assignment needed. */
+function initSortable() {
+  if (typeof window.Sortable === 'undefined') return;
+
+  Sortable.create(els.placesList, {
+    handle: '.drag-handle',
+    animation: 150,
+    ghostClass: 'dragging',
+    touchStartThreshold: 5,
+    preventOnFilter: false,
+    filter: '.icon-btn',
+    onFilter: function(e) { e.preventDefault(); },
+    onEnd: () => {
+      const newUidOrder = Array.from(els.placesList.children).map(el => el.dataset.uid);
+      const uidToPlace = {};
+      state.places.forEach(p => { uidToPlace[p._uid] = p; });
+
+      // Rebuild array in new DOM order — no sortOrder needed, position is the order
+      const reorderedPlaces = [];
+      for (const uid of newUidOrder) {
+        if (uidToPlace[uid]) {
+          reorderedPlaces.push(uidToPlace[uid]);
+        }
+      }
+      state.places = reorderedPlaces;
+      markDirty();
+    }
+  });
+
+  els.placesList.__sortableInstance = Sortable.get(els.placesList);
+}
+
+/** Deletes a place from state using _uid (handles duplicate placeIds correctly).
+ * No sortOrder recalculation needed — array position is the order. */
+function deletePlace(uid) {
+  state.places = state.places.filter(p => p._uid !== uid);
+  markDirty();
+  renderPlacesList();
+}
+
+/** Marks state as dirty and updates UI indicators */
+function markDirty() {
+  state.isDirty = true;
+  els.dirtyIndicator.classList.remove('hidden');
+  els.saveBtn.disabled = false;
+}
+
+// ================= EDIT MODAL LOGIC (Replaces inline editing) =================
+
+/** Opens the edit modal for a given place. Pre-fills current name and tracks _uid. */
+function openEditModal(place) {
+  state.editingUid = place._uid;
+  els.editPlaceName.value = sanitizePlaceName(place.placeName);
+  els.editPlaceName.classList.remove('error');
+  els.editModal.classList.remove('hidden');
+  setTimeout(() => { els.editPlaceName.focus(); els.editPlaceName.select(); }, 100);
+}
+
+/** Closes the edit modal and clears editing state. */
+function closeEditModal() {
+  els.editModal.classList.add('hidden');
+  state.editingUid = null;
+}
+
+/** Confirms name change from edit modal. Validates, updates state by _uid, re-renders list. */
+function confirmEditPlace() {
+  const newName = els.editPlaceName.value.trim();
+  if (!validatePlaceName(newName)) {
+    showToast('Invalid name format or length.');
+    els.editPlaceName.classList.add('error');
+    return;
+  }
+
+  // Find and update the place by _uid
+  const place = state.places.find(p => p._uid === state.editingUid);
+  if (place) {
+    place.placeName = newName;
+    markDirty();
+    renderPlacesList();
+  }
+  closeEditModal();
+}
+
+// ================= ADD PLACE WIZARD LOGIC =================
+let searchDebounceTimer = null;
+
+function openWizard() {
+  state.wizardStep = 1;
+  state.selectedPlaceId = null;
+  els.searchInput.value = '';
+  els.searchResults.innerHTML = '';
+  els.noSearchResults.classList.add('hidden');
+  els.newPlaceName.value = '';
+  els.searchLoading.classList.add('hidden');
+  toggleWizardSteps();
+  els.wizardModal.classList.remove('hidden');
+  setTimeout(() => els.searchInput.focus(), 100);
+}
+
+function closeWizard() {
+  els.wizardModal.classList.add('hidden');
+  if (state.abortController) state.abortController.abort();
+}
+
+function toggleWizardSteps() {
+  if (state.wizardStep === 1) {
+    els.wizardStep1.classList.remove('hidden');
+    els.wizardStep2.classList.add('hidden');
+  } else {
+    els.wizardStep1.classList.add('hidden');
+    els.wizardStep2.classList.remove('hidden');
+    setTimeout(() => els.newPlaceName.focus(), 100);
+  }
+}
+
+function handleSearchInput(e) {
+  const query = e.target.value.trim();
+  clearTimeout(searchDebounceTimer);
+  if (state.abortController) state.abortController.abort();
+
+  if (query.length < 3) {
+    els.searchResults.innerHTML = '';
+    els.noSearchResults.classList.add('hidden');
+    els.searchLoading.classList.add('hidden');
+    return;
+  }
+
+  els.searchLoading.classList.remove('hidden');
+  els.searchResults.innerHTML = '';
+  els.noSearchResults.classList.add('hidden');
+
+  searchDebounceTimer = setTimeout(async () => {
+    state.abortController = new AbortController();
+    try {
+      const results = await apiFetch(`/search-google?query=${encodeURIComponent(query)}`, {
+        signal: state.abortController.signal
+      });
+      els.searchLoading.classList.add('hidden');
+
+      if (Array.isArray(results) && results.length > 0) {
+        els.noSearchResults.classList.add('hidden');
+        results.slice(0, 10).forEach(place => {
+          const li = document.createElement('li');
+          li.className = 'search-result-item';
+          li.innerHTML = `
+            <span class="search-result-name">${escapeHtml(place.name)}</span>
+            <span class="search-result-address">${escapeHtml(place.address)}</span>
+          `;
+          li.addEventListener('click', () => selectSearchResult(place));
+          els.searchResults.appendChild(li);
+        });
+      } else {
+        els.noSearchResults.classList.remove('hidden');
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') showToast('Search failed.');
+      els.searchLoading.classList.add('hidden');
+    }
+  }, 500);
+}
+
+function selectSearchResult(place) {
+  state.selectedPlaceId = place.placeId;
+  els.newPlaceName.value = sanitizePlaceName(place.name);
+  state.wizardStep = 2;
+  toggleWizardSteps();
+}
+
+/** Confirms addition of new place from wizard. Assigns _uid for duplicate safety.
+ * No sortOrder — appended to end of array, position determines order. */
+function confirmAddPlace() {
+  const newName = els.newPlaceName.value.trim();
+  if (!validatePlaceName(newName)) {
+    showToast('Invalid name format or length.');
+    els.newPlaceName.classList.add('error');
+    return;
+  }
+
+  // No sortOrder — array position is the order
+  const newPlace = {
+    placeName: newName,
+    placeId: state.selectedPlaceId,
+    _uid: generateUid()
+  };
+  state.places.push(newPlace);
+  markDirty();
+  renderPlacesList();
+  closeWizard();
+}
+
+// ================= SAVE LOGIC =================
+
+/** Saves places to backend. Payload only includes {placeName, placeId} — no sortOrder.
+ * Array position in the payload determines order on the server. */
+async function savePlaces() {
+  if (!state.isDirty) return;
+
+  const btnText = els.saveBtn.querySelector('.btn-text');
+  const spinner = els.saveBtn.querySelector('.spinner');
+  els.saveBtn.disabled = true;
+  btnText.textContent = 'Saving...';
+  spinner.classList.remove('hidden');
+
+  try {
+    // Send only placeName and placeId — order is determined by array position, no sortOrder
+    const payload = state.places.map(({ placeName, placeId }) => ({ placeName, placeId }));
+
+    const response = await apiFetch('/places', {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    });
+
+    // Server may modify data. Replace local state with response, re-assign _uids.
+    if (Array.isArray(response)) {
+      state.places = response.map(p => ({ ...p, _uid: generateUid() }));
+      renderPlacesList();
+    }
+
+    state.isDirty = false;
+    els.dirtyIndicator.classList.add('hidden');
+    showToast('Changes saved successfully.', 'success');
+  } catch (err) {
+    // apiFetch handles toast
+  } finally {
+    btnText.textContent = 'Save Changes';
+    spinner.classList.add('hidden');
+    if (state.isDirty) els.saveBtn.disabled = false;
+    else els.saveBtn.disabled = true;
+  }
+}
+
+// ================= INITIALIZATION & EVENT BINDING =================
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+els.authForm.addEventListener('submit', handleAuthSubmit);
+els.otpInput.addEventListener('input', handleOtpInput);
+els.logoutBtn.addEventListener('click', handleLogout);
+els.addPlaceBtn.addEventListener('click', openWizard);
+els.closeWizardBtn.addEventListener('click', closeWizard);
+els.searchInput.addEventListener('input', handleSearchInput);
+els.confirmAddBtn.addEventListener('click', confirmAddPlace);
+els.saveBtn.addEventListener('click', savePlaces);
+
+// Edit modal event bindings
+els.closeEditBtn.addEventListener('click', closeEditModal);
+els.confirmEditBtn.addEventListener('click', confirmEditPlace);
+
+// Step 2 name input: strip invalid characters in real-time (add wizard)
+els.newPlaceName.addEventListener('input', () => {
+  const cursorPos = els.newPlaceName.selectionStart;
+  const before = els.newPlaceName.value;
+  const cleaned = sanitizePlaceName(before);
+  if (cleaned !== before) {
+    els.newPlaceName.value = cleaned;
+    const newCursor = Math.min(cursorPos, cleaned.length);
+    els.newPlaceName.setSelectionRange(newCursor, newCursor);
+  }
+  if (!validatePlaceName(els.newPlaceName.value)) {
+    els.newPlaceName.classList.add('error');
+  } else {
+    els.newPlaceName.classList.remove('error');
+  }
+});
+
+// Edit modal name input: strip invalid characters in real-time (same approach as wizard step 2)
+els.editPlaceName.addEventListener('input', () => {
+  const cursorPos = els.editPlaceName.selectionStart;
+  const before = els.editPlaceName.value;
+  const cleaned = sanitizePlaceName(before);
+  if (cleaned !== before) {
+    els.editPlaceName.value = cleaned;
+    const newCursor = Math.min(cursorPos, cleaned.length);
+    els.editPlaceName.setSelectionRange(newCursor, newCursor);
+  }
+  if (!validatePlaceName(els.editPlaceName.value)) {
+    els.editPlaceName.classList.add('error');
+  } else {
+    els.editPlaceName.classList.remove('error');
+  }
+});
+
+// Allow Enter key to confirm edit in the modal
+els.editPlaceName.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); confirmEditPlace(); }
+  if (e.key === 'Escape') closeEditModal();
+});
+
+window.addEventListener('online', () => updateOfflineBanner(true));
+window.addEventListener('offline', () => updateOfflineBanner(false));
+
+document.addEventListener('DOMContentLoaded', initAuth);
+</script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+# ==========================================
+# Local Secrets & Custom Configs
+# ==========================================
+lz_secrets.h
+.claude/settings.local.json
+
+# ==========================================
+# Custom Workspace Patterns (kiu)
+# ==========================================
+**/unreleased/
+.~lock.*
+tmp.bin
+
+# ==========================================
+# Arduino & C/C++ Build Output
+# ==========================================
+/build/
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.a
+*.so
+*.d
+
+# ==========================================
+# STM32
+# ==========================================
+**/Backup/
+**/Release/
+**/Debug/
+
+# ==========================================
+# KiCad
+# ==========================================
+fp-info-cache
+**/*-backups/
+**/backups/
+*.lck
+
+# ==========================================
+# Java / Spring / Maven
+# ==========================================
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+*.rar
+
+# JVM crash & runtime logs
+hs_err_pid*
+replay_pid*
+*.log
+
+# ==========================================
+# Eclipse & Spring Tool Suite (STS)
+# ==========================================
+.metadata/
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+*.tmp
+*.bak
+*.m4
+
+# ==========================================
+# Operating System Files
+# ==========================================
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Thumbs.db
