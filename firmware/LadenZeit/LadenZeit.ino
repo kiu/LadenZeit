@@ -795,6 +795,7 @@ void loop() {
   if (SLEEP_IN_SECONDS > 0) {
     if ((time(NULL) - mainActionLast) > SLEEP_IN_SECONDS) {
       enterSleep();
+      mainNetworkPlacesDownload();
     }
   }
 #endif

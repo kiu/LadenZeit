@@ -3,9 +3,15 @@
 
 #include <Arduino.h>
 
-#define PIN_ENCODER_MSB 3
+// REV B
+#define PIN_ENCODER_MSB 0
 #define PIN_ENCODER_LSB 1
-#define PIN_ENCODER_BTN 0
+#define PIN_ENCODER_BTN 3
+
+// REV A
+//#define PIN_ENCODER_MSB 3
+//#define PIN_ENCODER_LSB 1
+//#define PIN_ENCODER_BTN 0
 
 void dialSetup();
 

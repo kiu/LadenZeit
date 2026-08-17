@@ -227,15 +227,20 @@ NetworkState wifiConnectAndStore(const String& ssid, const String& pass) {
 
 NetworkState wifiConnect() {
   networkPref.begin(NETWORK_PREF, true);
-  String ssid = networkPref.getString(NETWORK_PREF_WIFI_SSID, "");
-  String pass = networkPref.getString(NETWORK_PREF_WIFI_PASS, "");
-  networkPref.end();
 
 #ifdef DEV_WIFI_SSID
-  ssid = DEV_WIFI_SSID;
-  pass = DEV_WIFI_PASS;
+  String ssid = networkPref.getString(NETWORK_PREF_WIFI_SSID, DEV_WIFI_SSID);
+#else
+  String ssid = networkPref.getString(NETWORK_PREF_WIFI_SSID, "");
 #endif
 
+#ifdef DEV_WIFI_PASS
+  String pass = networkPref.getString(NETWORK_PREF_WIFI_PASS, DEV_WIFI_PASS);
+#else
+  String pass = networkPref.getString(NETWORK_PREF_WIFI_PASS, "");
+#endif
+
+  networkPref.end();
   return wifiConnectCredentials(ssid, pass);
 }
 

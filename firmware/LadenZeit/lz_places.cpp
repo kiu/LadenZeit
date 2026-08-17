@@ -190,6 +190,7 @@ bool placesStatus(uint8_t pidx, uint16_t* minsUntilChange) {
 // Raw hex/ASCII dump of the first `len` received bytes, for diagnosing a
 // payload the validator rejected. Dev-only (LOG compiles away in production).
 void placesDumpRaw(uint16_t len) {
+  #ifdef DEV_MODE
   if (len > PLACES_BUFFER_MAX) {
     len = PLACES_BUFFER_MAX;
   }
@@ -207,9 +208,11 @@ void placesDumpRaw(uint16_t len) {
     }
     LOG("%s|\n", line);
   }
+  #endif
 }
 
 void placesDebug() {
+  #ifdef DEV_MODE
   LOG("places: %d places\n", placesCount());
   for (uint8_t i = 0; i < placesCount(); i++) {
     char name[PLACES_NAME_MAX];
@@ -224,4 +227,5 @@ void placesDebug() {
           to / MINUTES_PER_DAY, (to % MINUTES_PER_DAY) / 60, to % 60);
     }
   }
+  #endif
 }

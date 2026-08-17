@@ -12,7 +12,7 @@ ESP32Time rtc(0);  // offset 0 seconds
 // 0 = never fetched, so timeCacheExpired() reports expired until the first
 // successful download seeds the clock and calls timeCacheInit().
 uint32_t timeCacheExpiry = 0;
-const uint32_t TIME_CACHE_TTL_SEC = 3600;
+const uint32_t TIME_CACHE_TTL_SEC = 3600 * 12;
 
 uint8_t timeDayGet() {
   return rtc.getDayofWeek();  // 0 = Sunday .. 6 = Saturday
