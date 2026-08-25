@@ -1,5 +1,5 @@
 # LadenZeit
-LadenZeit - TBD
+LadenZeit - Never miss opening hours again. Minimalist OLED store tracker with rotary control
 
 <img src="hardware/REV_B/LadenZeit-main-render-front.png" width="800"/>
 
@@ -32,7 +32,7 @@ Arduino IDE config
 ## Server (Java Spring Boot)
 
 - [source](server/LadenZeitServer)
-- [frontend](server/index.html)
+- [single file frontend](server/index.html)
 - [service](server/ladenzeit.service)
 
 Inject Google Maps API key via environment.
