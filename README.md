@@ -1,13 +1,18 @@
 # LadenZeit
 LadenZeit - Never miss opening hours again. Minimalist OLED store tracker with rotary control
 
+<img src="LadenZeit-real-shops.jpg" width="800"/>
+
 <img src="hardware/REV_B/LadenZeit-main-render-front.png" width="800"/>
 
 <img src="hardware/REV_B/LadenZeit-main-render-back.png" width="800"/>
 
 <img src="hardware/REV_B/LadenZeit-plate-render-front.png" width="800"/>
 
-<img src="hardware/REV_B/LadenZeit-mech-render.png" width="800"/>
+<img src="LadenZeit-real-shop.jpg" width="800"/>
+
+<img src="LadenZeit-real-menu.jpg" width="800"/>
+
 
 ## Device
 
