@@ -5,7 +5,7 @@ After=network.target
 
 [Service]
 Environment="MAPS_API_KEY=your_key_here"
-ExecStart=/usr/bin/java -Dserver.port=8083 -Dserver.address=127.0.0.1 -Dspring.threads.virtual.enabled=true -Dlogging.level.com.nakamura_labs=INFO -jar /opt/ladenzeit/ladenzeit-0.0.1-SNAPSHOT.jar
+ExecStart=/usr/bin/java -Dserver.port=8083 -Dserver.address=127.0.0.1 -Xms128m -Xmx256m -XX:MaxMetaspaceSize=160m -Xss512k -Dlogging.level.com.nakamura_labs=INFO -jar /opt/ladenzeit/ladenzeit-0.0.1-SNAPSHOT.jar
 Restart=always
 SyslogIdentifier=sc
 
